@@ -1,0 +1,4 @@
+.DS_Store
+.local/
+.obsidian/
+__pycache__/

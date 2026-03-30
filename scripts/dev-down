@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# 停止当前 worktree 的应用实例，但保留日志和产物，
+# 方便后续排查问题或继续分析。
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/worktree-runtime.sh
+source "$SCRIPT_DIR/lib/worktree-runtime.sh"
+
+resolve_runtime
+
+started_at="$(read_status_field "startedAt")"
+
+app_pid="$(read_app_pid)"
+app_pgid="$(read_app_pgid)"
+if [[ -n "$app_pid" ]] && is_pid_running "$app_pid"; then
+  stop_process_group "$app_pgid" "$app_pid"
+  rm -f "$APP_PID_FILE"
+  rm -f "$APP_PGID_FILE"
+  write_status_json "stopped" "$started_at" "null" "stopped" "false" "" "null" ""
+  printf '已停止 %s 的应用进程 %s\n' "$WORKTREE_ID" "$app_pid"
+  exit 0
+fi
+
+write_status_json "stopped" "$started_at" "null" "not_running" "false" "" "null" ""
+printf '未发现 %s 对应的运行中应用进程\n' "$WORKTREE_ID"

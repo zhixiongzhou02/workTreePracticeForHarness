@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# 仓库级真实应用启动入口。
+# 当前实现先落单进程策略，但对外语义保持为仓库级入口；
+# 后续如果演进到前后端双进程或多服务，外部仍然只通过这个脚本接入。
+# worktree 运行时准备、端口分配和状态机不由这里负责。
+
+is_configured() {
+  local repo_root command_file
+  repo_root="${REPO_ROOT:-$(pwd)}"
+  command_file="$repo_root/scripts/app-start.command"
+
+  if [[ -n "${HARNESS_SINGLE_PROCESS_COMMAND:-}" ]]; then
+    return 0
+  fi
+
+  [[ -s "$command_file" ]]
+}
+
+resolve_ready_url() {
+  local repo_root ready_url_file
+  repo_root="${REPO_ROOT:-$(pwd)}"
+  ready_url_file="$repo_root/scripts/app-ready.url"
+
+  if [[ -n "${HARNESS_APP_READY_URL:-}" ]]; then
+    printf '%s\n' "$HARNESS_APP_READY_URL"
+    return 0
+  fi
+
+  if [[ -f "$ready_url_file" ]]; then
+    cat "$ready_url_file"
+    return 0
+  fi
+
+  if [[ -n "${APP_URL:-}" ]]; then
+    printf '%s\n' "$APP_URL"
+    return 0
+  fi
+
+  return 1
+}
+
+resolve_ready_command() {
+  local repo_root ready_command_file
+  repo_root="${REPO_ROOT:-$(pwd)}"
+  ready_command_file="$repo_root/scripts/app-ready.command"
+
+  if [[ -n "${HARNESS_APP_READY_COMMAND:-}" ]]; then
+    printf '%s\n' "$HARNESS_APP_READY_COMMAND"
+    return 0
+  fi
+
+  if [[ -f "$ready_command_file" ]]; then
+    cat "$ready_command_file"
+    return 0
+  fi
+
+  return 1
+}
+
+if [[ "${1:-}" == "--is-configured" ]]; then
+  is_configured
+  exit $?
+fi
+
+if [[ "${1:-}" == "--print-ready-url" ]]; then
+  resolve_ready_url
+  exit $?
+fi
+
+if [[ "${1:-}" == "--print-ready-command" ]]; then
+  resolve_ready_command
+  exit $?
+fi
+
+required_vars=(
+  REPO_ROOT
+  WORKTREE_ID
+  APP_PORT
+  API_PORT
+  METRICS_PORT
+  AUX_PORT
+  APP_URL
+  API_URL
+  STATE_ROOT
+  RUN_ROOT
+  DATA_ROOT
+  CACHE_ROOT
+  LOG_ROOT
+  ARTIFACT_ROOT
+  TMP_ROOT
+)
+
+for var_name in "${required_vars[@]}"; do
+  if [[ -z "${!var_name:-}" ]]; then
+    printf '缺少必需环境变量 %s。请通过 scripts/dev-up 启动，而不是直接运行 scripts/app-start。\n' "$var_name" >&2
+    exit 1
+  fi
+done
+
+cd "$REPO_ROOT"
+
+export PORT="${PORT:-$APP_PORT}"
+export HOST="${HOST:-127.0.0.1}"
+export APP_STATE_ROOT="${APP_STATE_ROOT:-$STATE_ROOT}"
+export APP_DATA_DIR="${APP_DATA_DIR:-$DATA_ROOT}"
+export APP_CACHE_DIR="${APP_CACHE_DIR:-$CACHE_ROOT}"
+export APP_LOG_DIR="${APP_LOG_DIR:-$LOG_ROOT}"
+export APP_TMP_DIR="${APP_TMP_DIR:-$TMP_ROOT}"
+
+# 单进程命令的优先级：
+# 1. HARNESS_SINGLE_PROCESS_COMMAND
+# 2. scripts/app-start.command
+command_file="$REPO_ROOT/scripts/app-start.command"
+single_process_command="${HARNESS_SINGLE_PROCESS_COMMAND:-}"
+command_source="scripts/app-start.command"
+
+if [[ -z "$single_process_command" && -f "$command_file" ]]; then
+  single_process_command="$(<"$command_file")"
+fi
+
+if [[ -n "${HARNESS_SINGLE_PROCESS_COMMAND:-}" ]]; then
+  command_source="HARNESS_SINGLE_PROCESS_COMMAND"
+fi
+
+if ! is_configured; then
+  cat >&2 <<EOF
+未配置单进程应用启动命令。
+
+请使用下面两种方式之一完成接入：
+
+1. 临时方式：在执行 scripts/dev-up 前设置 HARNESS_SINGLE_PROCESS_COMMAND
+   例如：
+   HARNESS_SINGLE_PROCESS_COMMAND='npm run dev -- --port "$APP_PORT"' scripts/dev-up
+
+2. 仓库方式：创建 scripts/app-start.command
+   文件内容示例：
+   npm run dev -- --port "\$APP_PORT"
+
+当前 scripts/app-start 已经负责：
+- 校验 worktree 运行时环境
+- 提供统一的端口和目录变量
+- 作为单进程真实应用的仓库级启动入口
+EOF
+  exit 1
+fi
+
+printf '使用仓库级应用入口启动，当前策略为单进程，命令来源：%s\n' "$command_source" >&2
+exec sh -lc "$single_process_command"

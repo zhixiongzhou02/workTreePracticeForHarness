@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# 统一的 worktree 启动入口：
+# 1. 准备运行时契约和元数据
+# 2. 选择真实应用启动入口
+# 3. 启动当前 worktree 对应的应用实例
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/worktree-runtime.sh
+source "$SCRIPT_DIR/lib/worktree-runtime.sh"
+
+ensure_runtime_dirs
+existing_app_pid="$(read_app_pid)"
+if [[ -n "$existing_app_pid" ]] && is_pid_running "$existing_app_pid"; then
+  apply_port_lease_if_present >/dev/null 2>&1 || true
+  resolve_app_start_command >/dev/null 2>&1 || true
+  resolve_app_ready_contract >/dev/null 2>&1 || true
+  apply_app_start_metadata_if_present >/dev/null 2>&1 || true
+  apply_app_ready_metadata_if_present >/dev/null 2>&1 || true
+  write_runtime_env_file
+  write_env_json
+  print_summary
+  printf '当前 worktree 的应用实例已经在运行，APP_PID=%s。\n' "$existing_app_pid"
+  exit 0
+fi
+
+# 端口和运行时元数据必须先确定，再决定如何启动真实应用。
+preflight_ports
+resolve_app_start_command >/dev/null 2>&1 || true
+resolve_app_ready_contract >/dev/null 2>&1 || true
+write_ports_json
+write_runtime_env_file
+write_env_json
+
+started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+app_start_command="$APP_START_COMMAND"
+
+if [[ -z "$app_start_command" ]]; then
+  write_status_json "prepared" "$started_at" "null" "not_configured" "false" "" "null" ""
+  print_summary
+  printf '未配置真实应用启动命令。请设置 HARNESS_APP_START_COMMAND，或为单进程模式提供 HARNESS_SINGLE_PROCESS_COMMAND / scripts/app-start.command。当前仅完成运行时元数据和目录准备，尚未启动应用进程。\n'
+  exit 0
+fi
+
+app_log="$LOG_ROOT/app.log"
+# 真实应用始终在 worktree 运行时环境下启动，避免绕开端口和目录约束。
+launch_app_process "$app_start_command" "$app_log"
+app_pid="$LAUNCHED_APP_PID"
+printf '%s\n' "$app_pid" >"$APP_PID_FILE"
+printf '%s\n' "$app_pid" >"$APP_PGID_FILE"
+
+write_status_json "starting" "$started_at" "$app_pid" "starting" "false" "" "$app_pid" ""
+
+if ! wait_for_app_readiness "$started_at" "$app_pid" "$app_pid"; then
+  print_summary
+  printf '应用进程已启动，但在 readiness 检查阶段失败。请检查 %s。\n' "$app_log" >&2
+  exit 1
+fi
+
+print_summary
+printf 'APP_PID: %s\n' "$app_pid"

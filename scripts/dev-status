@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# 查询当前 worktree 运行态，不直接推断框架状态；
+# 以元数据文件和 PID 为主要依据。
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/worktree-runtime.sh
+source "$SCRIPT_DIR/lib/worktree-runtime.sh"
+
+ensure_runtime_dirs
+apply_port_lease_if_present >/dev/null 2>&1 || true
+resolve_app_start_command >/dev/null 2>&1 || true
+resolve_app_ready_contract >/dev/null 2>&1 || true
+apply_app_start_metadata_if_present >/dev/null 2>&1 || true
+apply_app_ready_metadata_if_present >/dev/null 2>&1 || true
+write_runtime_env_file
+
+if [[ ! -f "$ENV_JSON" ]]; then
+  write_ports_json
+  write_env_json
+fi
+
+app_pid="$(read_app_pid)"
+app_pgid="$(read_app_pgid)"
+state="not_started"
+health="idle"
+ready="false"
+ready_at=""
+failure_reason=""
+started_at=""
+
+if [[ -f "$STATUS_JSON" ]]; then
+  state="$(read_status_field "state")"
+  health="$(read_status_field "health")"
+  ready="$(read_status_bool_field "ready")"
+  ready_at="$(read_status_field "readyAt")"
+  failure_reason="$(read_status_field "failureReason")"
+  started_at="$(read_status_field "startedAt")"
+fi
+
+if [[ -n "$app_pid" ]] && is_pid_running "$app_pid"; then
+  if readiness_check_success; then
+    state="ready"
+    health="ready"
+    ready="true"
+    if [[ -z "$ready_at" ]]; then
+      ready_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    fi
+  else
+    state="starting"
+    health="starting"
+    ready="false"
+  fi
+  write_status_json "$state" "$started_at" "$app_pid" "$health" "$ready" "$ready_at" "${app_pgid:-$app_pid}" "$failure_reason"
+elif [[ "$state" == "starting" || "$state" == "ready" ]]; then
+  state="failed"
+  health="failed"
+  ready="false"
+  if [[ -z "$failure_reason" ]]; then
+    failure_reason="process_not_running"
+  fi
+  write_status_json "$state" "$started_at" "null" "$health" "$ready" "$ready_at" "null" "$failure_reason"
+fi
+
+cat <<EOF
+WORKTREE_ID: $WORKTREE_ID
+STATE: $state
+HEALTH: $health
+READY: $ready
+READY_AT: $ready_at
+FAILURE_REASON: $failure_reason
+WORKTREE_MODE: $WORKTREE_MODE
+WORKTREE_CONTEXT_SOURCE: $WORKTREE_CONTEXT_SOURCE
+PORT_CONFLICT_MODE: $PORT_CONFLICT_MODE
+PORT_ALLOCATION_SOURCE: $PORT_ALLOCATION_SOURCE
+PORT_OFFSET: $PORT_OFFSET
+APP_START_SOURCE: $APP_START_SOURCE
+APP_READY_SOURCE: $APP_READY_SOURCE
+APP_URL: $APP_URL
+API_URL: $API_URL
+APP_PORT: $APP_PORT
+API_PORT: $API_PORT
+METRICS_PORT: $METRICS_PORT
+AUX_PORT: $AUX_PORT
+STATE_ROOT: $STATE_ROOT
+RUN_ROOT: $RUN_ROOT
+LOG_ROOT: $LOG_ROOT
+ARTIFACT_ROOT: $ARTIFACT_ROOT
+EOF

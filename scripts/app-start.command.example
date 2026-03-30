@@ -1,0 +1,23 @@
+# 这是“真实单进程应用命令”的仓库级配置文件。
+# 文件内容会被 scripts/app-start 读取，并通过 `sh -lc` 执行。
+#
+# 推荐规则：
+# 1. 尽量使用单条 shell 命令，必要时可以写成多行脚本
+# 2. 最后一个真正的应用进程尽量用 exec 启动
+# 3. 禁止硬编码端口，统一使用 "$APP_PORT"
+# 4. 禁止把进程放到后台运行（不要用 &）
+# 5. 如需写本地文件，优先使用 APP_DATA_DIR / APP_CACHE_DIR / APP_LOG_DIR / APP_TMP_DIR
+#
+# 推荐最小格式：
+# exec <你的应用命令> --port "$APP_PORT"
+#
+# 常见示例：
+# exec npm run dev -- --port "$APP_PORT"
+# exec pnpm dev -- --port "$APP_PORT"
+# exec python3 -m http.server "$APP_PORT" --bind "$HOST"
+#
+# 如果启动前需要准备目录，也可以写成多行：
+# mkdir -p "$APP_DATA_DIR" "$APP_CACHE_DIR" "$APP_TMP_DIR"
+# exec npm run dev -- --port "$APP_PORT"
+
+exec npm run dev -- --port "$APP_PORT"

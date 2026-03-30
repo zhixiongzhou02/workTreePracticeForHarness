@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# 重置当前 worktree 的可变运行态：
+# 停止进程后清空 data/cache/tmp，并重新生成基础元数据。
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/worktree-runtime.sh
+source "$SCRIPT_DIR/lib/worktree-runtime.sh"
+
+"$SCRIPT_DIR/dev-down" >/dev/null 2>&1 || true
+resolve_runtime
+resolve_app_start_command >/dev/null 2>&1 || true
+
+rm -rf "$DATA_ROOT" "$CACHE_ROOT" "$TMP_ROOT" "$RUN_ROOT/pids"
+rm -f "$RUN_ROOT"/*.json "$APP_PID_FILE" "$APP_PGID_FILE"
+mkdir -p "$RUN_ROOT/pids" "$DATA_ROOT" "$CACHE_ROOT" "$TMP_ROOT"
+
+write_ports_json
+write_runtime_env_file
+write_env_json
+write_status_json "reset" "" "null" "idle" "false" "" "null" ""
+printf '已重置 %s 的可变运行态数据\n' "$WORKTREE_ID"
