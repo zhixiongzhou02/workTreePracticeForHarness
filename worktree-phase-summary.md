@@ -21,6 +21,40 @@
 - 启动、停止、重置、查询统一走固定脚本接口
 - 运行时信息必须写成机器可读元数据，供人和 agent 共同使用
 
+## 三个概念的边界
+
+为了避免把“worktree”错误理解成“每次都必须启动应用”，当前阶段已经把模型明确拆成三层。
+
+### 1. Worktree Isolation
+
+负责代码工作面隔离：
+
+- 隔离工作目录
+- 隔离改动范围
+- 隔离提交上下文
+
+### 2. Runtime Isolation
+
+负责应用运行态隔离：
+
+- 隔离端口
+- 隔离 `.local`
+- 隔离日志、缓存、产物和元数据
+- 隔离应用进程和 readiness 状态
+
+### 3. Task Profiles
+
+负责任务编排：
+
+- `review-only`
+- `code-only`
+- `app-validate`
+
+当前实现里：
+
+- `review-only` 和 `code-only` 默认只做 Worktree Isolation，不默认启动应用
+- `app-validate` 默认同时启用 Worktree Isolation 和 Runtime Isolation，并进入真实应用启动链路
+
 换句话说：
 
 - `git worktree` 负责代码隔离

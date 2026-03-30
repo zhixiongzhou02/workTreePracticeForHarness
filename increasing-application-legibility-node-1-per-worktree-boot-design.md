@@ -137,6 +137,58 @@ agent 不应该靠猜测框架命令来启动应用。
 
 ## 设计方案
 
+## 三层隔离模型
+
+为了避免把“代码隔离”和“运行态隔离”混成一件事，这一节点现在明确采用三层模型。
+
+### 1. Worktree Isolation
+
+这一层负责代码工作面的隔离。
+
+它的目标是：
+
+- 让不同任务拥有独立工作目录
+- 让不同 agent 拥有独立改动面
+- 让分支、提交和文件改动互不污染
+
+这层能力由 git worktree 或原型目录模式提供，不要求一定启动应用。
+
+### 2. Runtime Isolation
+
+这一层负责应用运行态隔离。
+
+它的目标是：
+
+- 让不同实例拥有独立端口
+- 让不同实例拥有独立 `.local` 目录
+- 让不同实例拥有独立日志、缓存、产物和元数据
+- 让 agent 能稳定发现实例地址、状态和 readiness
+
+这层能力由 `scripts/dev-*`、`scripts/app-start` 和运行时元数据契约提供。
+
+### 3. Task Profiles
+
+这一层负责任务编排。
+
+它的目标不是新增一种隔离，而是决定一次任务默认需要启用哪几层能力。
+
+当前约定三种 profile：
+
+- `review-only`
+  只要求 Worktree Isolation，不默认启动应用
+- `code-only`
+  要求 Worktree Isolation，可准备运行时契约，但不默认启动应用
+- `app-validate`
+  同时要求 Worktree Isolation 和 Runtime Isolation，并默认启动应用进行验证
+
+### 三层关系
+
+可以把三层关系压缩成一句话：
+
+- Worktree Isolation 解决“谁在改哪份代码”
+- Runtime Isolation 解决“谁在运行哪个实例”
+- Task Profiles 解决“这次任务该启用哪几层能力”
+
 ## A. worktree 身份
 
 ### 建议的来源
@@ -330,12 +382,40 @@ agent 不应该靠猜测框架命令来启动应用。
 3. 根据端口冲突模式解析当前 worktree 的最终端口。
 4. 创建当前 worktree 的状态目录。
 5. 写入运行时元数据文件。
-6. 如果已经配置真实应用启动命令，则启动应用进程。
-7. 如果已配置真实应用启动入口，则先进入 `starting`，通过 readiness 检查后进入 `ready`。
-8. 如果尚未配置真实应用启动命令，则只进入 `prepared` 状态，不启动应用进程。
-9. 如果进程提前退出或 readiness 超时，则进入 `failed`。
+6. 根据 `HARNESS_TASK_PROFILE` 判断本次任务是否默认需要启动应用。
+7. 如果 profile 只要求 Worktree Isolation，则停在 `prepared`，不启动应用进程。
+8. 如果 profile 要求应用验证，且已配置真实应用启动入口，则先进入 `starting`，通过 readiness 检查后进入 `ready`。
+9. 如果 profile 要求应用验证，但尚未配置真实应用启动命令，则只进入 `prepared` 状态。
+10. 如果进程提前退出或 readiness 超时，则进入 `failed`。
 
 这意味着当前阶段的 `dev-up` 既可以作为“真正启动器”，也可以作为“运行时准备器”。
+
+### Task Profile 契约
+
+当前实现通过环境变量：
+
+- `HARNESS_TASK_PROFILE`
+
+来表达任务意图。
+
+支持值：
+
+- `review-only`
+- `code-only`
+- `app-validate`
+
+当前默认值：
+
+- `app-validate`
+
+当前行为：
+
+- `review-only`
+  `dev-up` 只准备元数据和目录，不默认启动应用
+- `code-only`
+  `dev-up` 只准备元数据和目录，不默认启动应用
+- `app-validate`
+  `dev-up` 会进入真实应用启动链路
 
 ### `scripts/dev-up`
 

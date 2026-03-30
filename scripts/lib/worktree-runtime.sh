@@ -6,6 +6,65 @@ set -euo pipefail
 # worktree 身份、端口、状态目录、元数据文件、启动入口解析。
 # 具体应用怎么跑，交给 scripts/app-start 或显式命令。
 
+task_profile_is_supported() {
+  case "${1:-}" in
+    review-only | code-only | app-validate)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+task_profile_app_start_policy() {
+  case "${1:-}" in
+    app-validate)
+      printf 'start\n'
+      ;;
+    review-only | code-only)
+      printf 'skip\n'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+task_profile_runtime_isolation_mode() {
+  case "${1:-}" in
+    review-only)
+      printf 'off-by-default\n'
+      ;;
+    code-only)
+      printf 'optional\n'
+      ;;
+    app-validate)
+      printf 'required\n'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+task_profile_description() {
+  case "${1:-}" in
+    review-only)
+      printf '只需要 worktree 隔离，不默认启动运行时实例。\n'
+      ;;
+    code-only)
+      printf '需要 worktree 隔离，可准备运行时契约，但不默认启动应用。\n'
+      ;;
+    app-validate)
+      printf '需要 worktree 隔离和运行时隔离，并默认启动应用进行验证。\n'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 require_git_worktree_root() {
   git rev-parse --show-toplevel 2>/dev/null
 }
@@ -52,6 +111,10 @@ derive_offset() {
 resolve_runtime() {
   export REPO_ROOT
   export WORKTREE_ID
+  export TASK_PROFILE
+  export TASK_PROFILE_APP_START_POLICY
+  export TASK_PROFILE_RUNTIME_ISOLATION
+  export TASK_PROFILE_DESCRIPTION
   export PORT_OFFSET
   export BASE_PORT_OFFSET
   export WORKTREE_MODE
@@ -121,6 +184,12 @@ resolve_runtime() {
   APP_READY_TIMEOUT_MS="${HARNESS_APP_READY_TIMEOUT_MS:-15000}"
   APP_READY_POLL_INTERVAL_MS="${HARNESS_APP_READY_POLL_INTERVAL_MS:-250}"
 
+  TASK_PROFILE="${HARNESS_TASK_PROFILE:-}"
+  if [[ -z "$TASK_PROFILE" && -f "$ENV_JSON" ]]; then
+    TASK_PROFILE="$(sed -n '/"taskProfile":[[:space:]]*{/,/}/{s/.*"name":[[:space:]]*"\([^"]*\)".*/\1/p;}' "$ENV_JSON" | head -n 1)"
+  fi
+  TASK_PROFILE="${TASK_PROFILE:-app-validate}"
+
   if [[ -n "${HARNESS_PORT_OFFSET:-}" ]]; then
     BASE_PORT_OFFSET="$((HARNESS_PORT_OFFSET % 100))"
     if [[ "$BASE_PORT_OFFSET" -lt 0 ]]; then
@@ -129,6 +198,10 @@ resolve_runtime() {
     PORT_OFFSET="$BASE_PORT_OFFSET"
     PORT_ALLOCATION_SOURCE="manual-offset"
   fi
+
+  TASK_PROFILE_APP_START_POLICY="$(task_profile_app_start_policy "$TASK_PROFILE")"
+  TASK_PROFILE_RUNTIME_ISOLATION="$(task_profile_runtime_isolation_mode "$TASK_PROFILE")"
+  TASK_PROFILE_DESCRIPTION="$(task_profile_description "$TASK_PROFILE")"
 
   set_ports_from_offset "$PORT_OFFSET"
 }
@@ -139,6 +212,7 @@ ensure_runtime_dirs() {
     printf '不支持的 HARNESS_WORKTREE_MODE: %s。仅支持 prototype 或 strict-git。\n' "$WORKTREE_MODE" >&2
     exit 1
   fi
+  assert_task_profile_is_supported
   assert_port_mode_is_supported
   # 所有可变运行态统一收敛到当前 worktree 自己的目录下。
   mkdir -p \
@@ -277,6 +351,12 @@ write_env_json() {
 {
   "worktreeId": "$(json_escape "$WORKTREE_ID")",
   "repoRoot": "$(json_escape "$REPO_ROOT")",
+  "taskProfile": {
+    "name": "$(json_escape "$TASK_PROFILE")",
+    "appStartPolicy": "$(json_escape "$TASK_PROFILE_APP_START_POLICY")",
+    "runtimeIsolation": "$(json_escape "$TASK_PROFILE_RUNTIME_ISOLATION")",
+    "description": "$(json_escape "$TASK_PROFILE_DESCRIPTION")"
+  },
   "worktreeContext": {
     "mode": "$(json_escape "$WORKTREE_MODE")",
     "source": "$(json_escape "$WORKTREE_CONTEXT_SOURCE")"
@@ -333,6 +413,7 @@ write_status_json() {
 
   cat >"$STATUS_JSON" <<EOF
 {
+  "taskProfile": "$(json_escape "$TASK_PROFILE")",
   "state": "$(json_escape "$state")",
   "startedAt": "$(json_escape "$started_at")",
   "ready": $ready,
@@ -352,6 +433,9 @@ write_runtime_env_file() {
   cat >"$RUNTIME_ENV_FILE" <<EOF
 export REPO_ROOT=$(shell_escape "$REPO_ROOT")
 export WORKTREE_ID=$(shell_escape "$WORKTREE_ID")
+export TASK_PROFILE=$(shell_escape "$TASK_PROFILE")
+export TASK_PROFILE_APP_START_POLICY=$(shell_escape "$TASK_PROFILE_APP_START_POLICY")
+export TASK_PROFILE_RUNTIME_ISOLATION=$(shell_escape "$TASK_PROFILE_RUNTIME_ISOLATION")
 export PORT_CONFLICT_MODE=$(shell_escape "$PORT_CONFLICT_MODE")
 export PORT_ALLOCATION_SOURCE=$(shell_escape "$PORT_ALLOCATION_SOURCE")
 export WORKTREE_MODE=$(shell_escape "$WORKTREE_MODE")
@@ -613,6 +697,9 @@ launch_app_process() {
 
 print_port_allocation_summary() {
   cat <<EOF
+TASK_PROFILE: $TASK_PROFILE
+TASK_PROFILE_APP_START_POLICY: $TASK_PROFILE_APP_START_POLICY
+TASK_PROFILE_RUNTIME_ISOLATION: $TASK_PROFILE_RUNTIME_ISOLATION
 WORKTREE_MODE: $WORKTREE_MODE
 WORKTREE_CONTEXT_SOURCE: $WORKTREE_CONTEXT_SOURCE
 PORT_CONFLICT_MODE: $PORT_CONFLICT_MODE
@@ -672,6 +759,17 @@ assert_port_mode_is_supported() {
     printf '不支持的 HARNESS_PORT_CONFLICT_MODE: %s。仅支持 strict 或 soft。\n' "$PORT_CONFLICT_MODE" >&2
     exit 1
   fi
+}
+
+assert_task_profile_is_supported() {
+  if ! task_profile_is_supported "$TASK_PROFILE"; then
+    printf '不支持的 HARNESS_TASK_PROFILE: %s。仅支持 review-only、code-only 或 app-validate。\n' "$TASK_PROFILE" >&2
+    exit 1
+  fi
+}
+
+should_start_app_for_task_profile() {
+  [[ "$TASK_PROFILE_APP_START_POLICY" == "start" ]]
 }
 
 read_status_field() {

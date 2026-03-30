@@ -4,8 +4,8 @@ set -euo pipefail
 
 # 统一的 worktree 启动入口：
 # 1. 准备运行时契约和元数据
-# 2. 选择真实应用启动入口
-# 3. 启动当前 worktree 对应的应用实例
+# 2. 根据 Task Profile 决定是否需要启动真实应用
+# 3. 如果需要，再进入真实应用启动链路
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/worktree-runtime.sh
@@ -36,6 +36,13 @@ write_env_json
 
 started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 app_start_command="$APP_START_COMMAND"
+
+if ! should_start_app_for_task_profile; then
+  write_status_json "prepared" "$started_at" "null" "skipped_by_task_profile" "false" "" "null" ""
+  print_summary
+  printf '当前 TASK_PROFILE=%s，按设计只做 Worktree Isolation，不默认启动应用实例。\n' "$TASK_PROFILE"
+  exit 0
+fi
 
 if [[ -z "$app_start_command" ]]; then
   write_status_json "prepared" "$started_at" "null" "not_configured" "false" "" "null" ""

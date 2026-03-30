@@ -15,6 +15,49 @@
 - 如何通过统一脚本暴露启动、停止、重置、查询能力
 - 如何把运行结果写成机器可读元数据，供人和 Agent 共同消费
 
+## 隔离模型
+
+这套方案把“隔离”拆成三层，而不是把所有任务都一律等同于“启动应用”。
+
+### Worktree Isolation
+
+这是代码工作面的隔离层。
+
+它解决的是：
+
+- 不同任务使用不同工作目录
+- 不同 Agent 不互相覆盖文件
+- 每个任务有独立的改动面、分支和提交上下文
+
+它关注的是代码副本，而不是运行中的应用实例。
+
+### Runtime Isolation
+
+这是应用运行态的隔离层。
+
+它解决的是：
+
+- 不同实例不抢端口
+- 不同实例的数据、缓存、日志和产物不混用
+- Agent 能稳定发现当前实例地址、状态和目录位置
+
+它关注的是端口、进程、`.local`、readiness 和元数据。
+
+### Task Profiles
+
+这是任务编排层。
+
+它不提供新的隔离机制，而是决定一类任务应该启用哪几层能力。
+
+当前实现支持三种 profile：
+
+- `review-only`
+  只需要 `Worktree Isolation`，不默认启动应用实例
+- `code-only`
+  需要 `Worktree Isolation`，可准备运行时契约，但不默认启动应用
+- `app-validate`
+  同时需要 `Worktree Isolation` 和 `Runtime Isolation`，并默认启动应用进行验证
+
 ## 设计思想
 
 这套方案背后的核心思想，不是“再包装一层开发脚本”，而是把本地应用运行时变成一个对 Agent 直接可理解、可驱动、可验证的系统。
@@ -174,6 +217,35 @@ scripts/dev-reset
 - `scripts/dev-down`：停止当前 worktree 对应的应用进程
 - `scripts/dev-reset`：停止实例并清理可变运行态数据
 
+### 4.1 Task Profile 驱动的默认行为
+
+当前 `scripts/dev-up` 会读取：
+
+```bash
+HARNESS_TASK_PROFILE
+```
+
+支持值：
+
+- `review-only`
+- `code-only`
+- `app-validate`
+
+默认值：
+
+```bash
+app-validate
+```
+
+默认行为如下：
+
+- `review-only`
+  `dev-up` 只准备 worktree 运行时元数据，不启动应用
+- `code-only`
+  `dev-up` 只准备 worktree 运行时元数据，不启动应用
+- `app-validate`
+  `dev-up` 会进入真实应用启动链路，并等待 readiness
+
 ### 5. 仓库级真实应用入口
 
 真实应用统一从下面这个入口接入：
@@ -250,6 +322,15 @@ scripts/dev-status
 - 执行 `scripts/dev-status`
 - 读取 `.local/worktrees/<WORKTREE_ID>/run/runtime.env`
 
+如果你只是做 review 或纯代码修改，可以显式指定 profile：
+
+```bash
+HARNESS_TASK_PROFILE=review-only scripts/dev-up
+HARNESS_TASK_PROFILE=code-only scripts/dev-up
+```
+
+这两种情况下，`dev-up` 会停在 `prepared`，不会启动真实应用。
+
 ### 2. 接入真实单进程应用
 
 复制模板：
@@ -277,6 +358,7 @@ scripts/dev-down
 如果你不想创建 `scripts/app-start.command`，也可以临时传环境变量：
 
 ```bash
+HARNESS_TASK_PROFILE=app-validate \
 HARNESS_SINGLE_PROCESS_COMMAND='exec python3 scripts/example-single-process-server.py' scripts/dev-up
 ```
 
@@ -301,6 +383,7 @@ HARNESS_WORKTREE_MODE=strict-git scripts/dev-up
 可以直接这样验证整条启动链路：
 
 ```bash
+HARNESS_TASK_PROFILE=app-validate \
 HARNESS_SINGLE_PROCESS_COMMAND='exec python3 scripts/example-single-process-server.py' scripts/dev-up
 scripts/dev-status
 scripts/dev-down
